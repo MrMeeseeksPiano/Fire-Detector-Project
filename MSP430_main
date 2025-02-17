@@ -1,0 +1,179 @@
+#include <msp430.h> 
+#include <stdio.h>
+#include <lcd_config.h>
+
+
+void ADC_config();
+void USCIA1_config();
+void USCIA0_config();
+void WriteSerial_char(char character);
+void WriteSerial_ESP32(char character);
+void WriteSerial_str(char *str);
+void int2Str(int value, char *buffer);
+void buzzer_pins(void);
+
+int main(void)
+{
+    volatile int adc_value;
+    WDTCTL = WDTPW | WDTHOLD;   // stop watchdog timer
+    ADC_config();
+    USCIA1_config();
+    USCIA0_config();
+
+
+    //config inicial do lcd
+    char addr;
+    leds_config();
+    USCI_B0_config();
+
+    if(i2c_test(0x27)==true) addr = 0x27;
+    else if (i2c_test(0x3F)==true) addr = 0x3F;
+    else{
+        //P1OUT |= BIT0; //deu ruim, acende o led vermelho
+        while(true); //trava a execu��o
+    }
+
+    //P4OUT |= BIT7; //tudo OK, acende led verde
+    UCB0I2CSA = addr;
+    lcd_inic();
+    i2c_write(0); //botar todos os pinos em 0
+    //-----------------------------------
+
+    int i;
+    char space = ' ';
+
+    int teste;
+
+    while(1){
+
+        ADC12CTL0 |= ADC12SC; //inicia convers�o
+        ADC12CTL0 &= ~ADC12SC; //zerar
+
+        while((ADC12IFG & ADC12IFG0)==0); //quando IFG vai para 1, significa que algo foi escrito na mem�ria
+        adc_value = ADC12MEM0;
+
+
+
+
+        if (adc_value< 600){
+            MensagemOk(); //Leitura normal
+            P4OUT |= BIT7; //ativa led verde
+            P1OUT &= ~BIT0; //desativa led vermelho
+            P2OUT &= ~BIT0; //desativa buzzer
+            TA1CCR1 = 0; //na vdd isso desativa o buzzer
+            char ok = 's';
+            WriteSerial_ESP32(ok);
+
+        }
+        else {
+            MensagemPerigo();
+            P1OUT |= BIT0; //ativa led vermelho
+            P4OUT &= ~BIT7; //desativa led verde
+            char notok = 'w';
+            WriteSerial_ESP32(notok);
+            buzzer_pins(); //ativa buzzer
+            delay(10000);
+        }
+
+        char buffer[20];
+        int2Str(adc_value, buffer);
+
+        WriteSerial_str(buffer);
+        WriteSerial_char(space);
+        //for (i=0;i<10000;i++);
+        delay(750);
+
+    }
+
+    return 0;
+}
+
+void ADC_config(){
+    ADC12CTL0 &= ~ADC12ENC; //desabilitar inicialmente o ADC12
+    ADC12CTL0 = ADC12ON; //ligar ADC
+
+    ADC12CTL1 = ADC12CONSEQ_0 // um canal sem repeti��es
+                |ADC12SHS_0 //disparo por software
+                |ADC12CSTARTADD_0 //endere�o de partida
+                |ADC12SSEL_3; //SM_clock
+
+    ADC12MCTL0 = ADC12SREF_0 //sele��o de referencia de tens�o
+                 |ADC12INCH_1; //entrada no canal 1 = A1
+
+    P6SEL |= BIT1; //porta 6.1 da MSP
+    ADC12CTL0 |= ADC12ENC; //habilitar ADC12
+
+}
+
+void USCIA1_config() {
+    UCA1CTL1 = UCSSEL_2 | //SMCLK=1.048.576Hz
+    UCSWRST; //UCSI em Reset
+    UCA1CTL0 = 0; //1 Stop
+    UCA1BRW = 109; //
+    UCA1MCTL=UCBRS_2|UCBRF_0; //UCOS16=0
+
+    P4DIR |= BIT4; //P4.4 sa�da
+    P4DIR &= ~BIT5; //P4.5 entrada
+    P4SEL |= BIT5 | BIT4; //Selecionar UART
+
+    PMAPKEYID = 0X02D52; //Liberar mapeamentp
+    P4MAP4 = PM_UCA1TXD; //TX=Sair por P4.4
+    P4MAP5 = PM_UCA1RXD; //RX=Receber por P4.5
+
+    UCA1CTL1 &= ~ UCSWRST; //UCSI sai de Reset
+}
+
+void USCIA0_config(){ //UART pro ESP32
+    /*UCA0CTL1 = UCSWRST;
+    UCA0CTL1 |= UCSSEL_2;
+    UCA0BRW = 6;
+    UCA0MCTL = UCBRF_13 | UCOS16;
+    P3SEL |= BIT4 | BIT3;      // P3.4 (TX) e P3.3 (RX)
+    UCA0CTL1 &= ~UCSWRST;*/
+
+    UCA0CTL1 = UCSWRST;
+    UCA0CTL0 = 0;
+    UCA0BRW = 3;
+    UCA0MCTL = UCBRS_3;
+    P3SEL |= BIT4 | BIT3;
+    UCA0CTL1 = UCSSEL_1;
+}
+
+void WriteSerial_char(char character) {
+    while ((UCA1IFG & UCTXIFG) == 0);
+    UCA1TXBUF = character;
+    //while ((UCA1IFG & UCRXIFG) == 0);
+}
+
+void WriteSerial_str(char *str){
+    while (*str !=0){
+        WriteSerial_char(*str++);
+    }
+}
+
+void int2Str(int value, char *buffer) {
+    int j;
+    for (j = 0; j < 4; j++) {
+        buffer[3 - j] = (value % 10) + '0';
+        value /= 10;
+    }
+    buffer[4] = '\0';
+}
+
+void buzzer_pins(void){
+    TA1CTL = TASSEL_2|ID_0|MC_1|TACLR;
+    TA1EX0 = TAIDEX_0;
+    TA1CCR0 = 1000 - 1;
+    TA1CCTL1 = OUTMOD_7;
+    TA1CCR1 = TA1CCR0/2;
+
+    P2DIR |= BIT0;
+    P2OUT &= BIT0;
+    P2SEL |= BIT0;
+}
+
+void WriteSerial_ESP32(char character) {
+    while ((UCA0IFG & UCTXIFG) == 0); // Espera buffer TX estar pronto
+    UCA0TXBUF = character;            // Envia caractere
+}
+
